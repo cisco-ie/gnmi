@@ -232,10 +232,13 @@ func NewQuery(sr *gpb.SubscribeRequest) (Query, error) {
 		return q, errors.New("Subscribe field in SubscribeRequest_Subscribe is nil")
 	}
 
-	if s.Subscribe.Prefix == nil {
-		return q, errors.New("Prefix field in SubscriptionList is nil")
+	// Per https://github.com/openconfig/reference/blob/3fd4765f55009423c49d5854dd12c5c686ca10d3/rpc/gnmi/gnmi-specification.md#3512-the-subscriptionlist-message
+	// "The default prefix is null"
+	// Per https://github.com/openconfig/reference/blob/3fd4765f55009423c49d5854dd12c5c686ca10d3/rpc/gnmi/gnmi-specification.md#2221-path-target
+	// "This field MUST only ever be present on prefix paths in the corresponding request and response messages. This field is optional for clients."
+	if s.Subscribe.Prefix != nil {
+		q.Target = s.Subscribe.Prefix.Target
 	}
-	q.Target = s.Subscribe.Prefix.Target
 	q.UpdatesOnly = s.Subscribe.UpdatesOnly
 	switch s.Subscribe.Mode {
 	case gpb.SubscriptionList_ONCE:
