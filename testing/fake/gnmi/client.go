@@ -20,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
 	log "github.com/golang/glog"
 	"github.com/kylelemons/godebug/pretty"
@@ -34,17 +33,14 @@ import (
 
 // Client contains information about a client that has connected to the fake.
 type Client struct {
-	sendMsg   int64
-	recvMsg   int64
 	errors    int64
-	cTime     time.Time
-	cCount    int64
 	config    *fpb.Config
 	polled    chan struct{}
 	mu        sync.RWMutex
 	canceled  bool
 	q         queue.Queue
 	subscribe *gpb.SubscriptionList
+	requests  []*gpb.SubscribeRequest
 }
 
 // NewClient returns a new initialized client.
@@ -82,15 +78,13 @@ func (c *Client) Run(stream gpb.GNMI_SubscribeServer) (err error) {
 	}()
 
 	query, err := stream.Recv()
-	c.cTime = time.Now()
-	c.cCount++
-	c.recvMsg++
 	if err != nil {
 		if err == io.EOF {
 			return grpc.Errorf(codes.Aborted, "stream EOF received before init")
 		}
 		return grpc.Errorf(grpc.Code(err), "received error from client")
 	}
+	c.requests = append(c.requests, query)
 	log.V(1).Infof("Client %s recieved initial query: %v", c, query)
 
 	c.subscribe = query.GetSubscribe()
@@ -130,7 +124,6 @@ var syncResp = &gpb.SubscribeResponse{
 func (c *Client) recv(stream gpb.GNMI_SubscribeServer) {
 	for {
 		event, err := stream.Recv()
-		c.recvMsg++
 		switch err {
 		default:
 			log.V(1).Infof("Client %s received error: %v", c, err)
@@ -140,6 +133,7 @@ func (c *Client) recv(stream gpb.GNMI_SubscribeServer) {
 			log.V(1).Infof("Client %s received io.EOF", c)
 			return
 		case nil:
+			c.requests = append(c.requests, event)
 		}
 		if c.subscribe.Mode == gpb.SubscriptionList_POLL {
 			log.V(1).Infof("Client %s received Poll event: %v", c, event)
@@ -177,7 +171,6 @@ func (c *Client) processQueue(stream gpb.GNMI_SubscribeServer) error {
 			return fmt.Errorf("client canceled")
 		}
 		event, err := q.Next()
-		c.sendMsg++
 		if err != nil {
 			c.errors++
 			return fmt.Errorf("unexpected queue Next(): %v", err)

@@ -18,11 +18,11 @@ package queue
 
 import (
 	"math/rand"
-	"reflect"
 	"testing"
 	"time"
 
-	"github.com/kylelemons/godebug/pretty"
+	"github.com/google/go-cmp/cmp"
+	"github.com/golang/protobuf/proto"
 	"github.com/openconfig/gnmi/errdiff"
 
 	gpb "github.com/openconfig/gnmi/proto/gnmi"
@@ -74,7 +74,7 @@ func TestUpdateTimestamp(t *testing.T) {
 			if diff := errdiff.Substring(err, tc.err); diff != "" {
 				t.Errorf("newValue(%q).updateTimestamp() %v", tc.in, diff)
 			}
-			if diff := pretty.Compare(v.v.GetTimestamp(), tc.want); err == nil && diff != "" {
+			if diff := cmp.Diff(v.v.GetTimestamp(), tc.want, cmp.Comparer(proto.Equal)); err == nil && diff != "" {
 				t.Errorf("newValue(%q).updateTimestamp() %v", tc.in, diff)
 			}
 		})
@@ -211,7 +211,7 @@ func TestUpdateIntValue(t *testing.T) {
 			if diff := errdiff.Substring(err, tc.err); diff != "" {
 				t.Errorf("newValue(%q).updateIntValue() %v", tc.value, diff)
 			}
-			if diff := pretty.Compare(v.v, tc.want); err == nil && diff != "" {
+			if diff := cmp.Diff(v.v, tc.want, cmp.Comparer(proto.Equal)); err == nil && diff != "" {
 				t.Errorf("newValue(%q).updatedIntValue() %v", tc.value, diff)
 			}
 		})
@@ -348,7 +348,7 @@ func TestUpdateDoubleValue(t *testing.T) {
 			if err != nil {
 				return
 			}
-			if diff := pretty.Compare(v.v, tc.want); diff != "" {
+			if diff := cmp.Diff(v.v, tc.want, cmp.Comparer(proto.Equal)); diff != "" {
 				t.Errorf("newValue(%q).updatedDoubleValue() %v", tc.value, diff)
 			}
 		})
@@ -418,7 +418,7 @@ func TestUpdateBoolValue(t *testing.T) {
 			if diff := errdiff.Substring(err, tc.err); diff != "" {
 				t.Errorf("newValue(%q).updateBoolValue() %v", tc.value, diff)
 			}
-			if diff := pretty.Compare(v.v, tc.want); err == nil && diff != "" {
+			if diff := cmp.Diff(v.v, tc.want, cmp.Comparer(proto.Equal)); err == nil && diff != "" {
 				t.Errorf("newValue(%q).updatedBoolValue() %v", tc.value, diff)
 			}
 		})
@@ -488,8 +488,156 @@ func TestUpdateStringValue(t *testing.T) {
 			if diff := errdiff.Substring(err, tc.err); diff != "" {
 				t.Errorf("newValue(%q).updateStringValue() %v", tc.value, diff)
 			}
-			if diff := pretty.Compare(v.v, tc.want); err == nil && diff != "" {
+			if diff := cmp.Diff(v.v, tc.want, cmp.Comparer(proto.Equal)); err == nil && diff != "" {
 				t.Errorf("newValue(%q).updatedStringValue() %v", tc.value, diff)
+			}
+		})
+	}
+}
+
+func TestUpdateUintValue(t *testing.T) {
+	tests := []struct {
+		desc  string
+		value *fpb.Value
+		want  *fpb.Value
+		err   string
+	}{{
+		desc:  "Nil value",
+		value: &fpb.Value{},
+		err:   "invalid UintValue",
+	}, {
+		desc: "Invalid min/max in range",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        50,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 100, Maximum: 0}}}}},
+		err: "invalid minimum/maximum in UintRange",
+	}, {
+		desc: "Invalid init value (value < min) in range",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        1,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 10, Maximum: 100}}}}},
+		err: "value not in [minimum, maximum] in UintRange",
+	}, {
+		desc: "Invalid init value (value > max) in range",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        200,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100}}}}},
+		err: "value not in [minimum, maximum] in UintRange",
+	}, {
+		desc: "Invalid delta_min/delta_max in range",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        50,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100, DeltaMin: 10, DeltaMax: 5}}}}},
+		err: "invalid delta_min/delta_max in UintRange",
+	}, {
+		desc: "Non-empty value, non-cumulative in range, using global seed",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        50,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100}}}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        65,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100}}}}},
+	}, {
+		desc: "Non-empty value, non-cumulative in range, using local seed",
+		value: &fpb.Value{
+			Seed: 10,
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value: 50, Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100}}}}},
+		want: &fpb.Value{
+			Seed: 10,
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        69,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100}}}}},
+	}, {
+		desc: "Non-empty value, cumulative in range",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        50,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100, DeltaMin: 10, DeltaMax: 10}}}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        60,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 100, DeltaMin: 10, DeltaMax: 10}}}}},
+	}, {
+		desc: "Non-empty value, cumulative, maximum capped in range",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        50,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 51, DeltaMin: 10, DeltaMax: 10}}}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        51,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 0, Maximum: 51, DeltaMin: 10, DeltaMax: 10}}}}},
+	}, {
+		desc: "Non-empty value, cumulative, minimum capped in range",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        50,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 45, Maximum: 60, DeltaMin: -10, DeltaMax: -10}}}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value: 45,
+				Distribution: &fpb.UintValue_Range{
+					Range: &fpb.UintRange{Minimum: 45, Maximum: 60, DeltaMin: -10, DeltaMax: -10}}}}},
+	}, {
+		desc: "Non-empty value, cumulative, minimum capped due to negative value",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        8,
+				Distribution: &fpb.UintValue_Range{Range: &fpb.UintRange{Minimum: 5, Maximum: 60, DeltaMin: -10, DeltaMax: -10}}}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value: 5,
+				Distribution: &fpb.UintValue_Range{
+					Range: &fpb.UintRange{Minimum: 5, Maximum: 60, DeltaMin: -10, DeltaMax: -10}}}}},
+	}, {
+		desc: "no options, random in list",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{Distribution: &fpb.UintValue_List{
+				List: &fpb.UintList{Random: true}}}}},
+		err: "missing options on UintValue_List",
+	}, {
+		desc: "four options, random in list",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{Distribution: &fpb.UintValue_List{
+				List: &fpb.UintList{Options: []uint64{100, 200, 300, 400}, Random: true}}}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value: 400,
+				Distribution: &fpb.UintValue_List{
+					List: &fpb.UintList{Options: []uint64{100, 200, 300, 400}, Random: true}}}}},
+	}, {
+		desc: "four options, non-random in list",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{Distribution: &fpb.UintValue_List{
+				List: &fpb.UintList{Options: []uint64{100, 200, 300, 400}, Random: false}}}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value: 100,
+				Distribution: &fpb.UintValue_List{
+					List: &fpb.UintList{Options: []uint64{200, 300, 400, 100}, Random: false}}}}},
+	}, {
+		desc: "constant",
+		value: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{Value: 100}}},
+		want: &fpb.Value{
+			Value: &fpb.Value_UintValue{&fpb.UintValue{Value: 100}}},
+	}}
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			v := newValue(tc.value, rand.New(rand.NewSource(seed)))
+			err := v.updateUintValue()
+			if diff := errdiff.Substring(err, tc.err); diff != "" {
+				t.Errorf("newValue(%q).updateUintValue() %v", tc.value, diff)
+			}
+			if diff := cmp.Diff(v.v, tc.want, cmp.Comparer(proto.Equal)); err == nil && diff != "" {
+				t.Errorf("newValue(%q).updatedUintValue() %v", tc.value, diff)
 			}
 		})
 	}
@@ -548,6 +696,18 @@ func TestNextValue(t *testing.T) {
 			Value:     &fpb.Value_DoubleValue{&fpb.DoubleValue{Value: 50.1}},
 		},
 	}, {
+		desc: "Repeat UintValue",
+		in: &fpb.Value{
+			Repeat:    5,
+			Timestamp: &fpb.Timestamp{Timestamp: 1234, DeltaMin: 1, DeltaMax: 1},
+			Value:     &fpb.Value_UintValue{&fpb.UintValue{Distribution: &fpb.UintValue_List{List: &fpb.UintList{Options: []uint64{10, 20, 30}, Random: false}}}}},
+		want: &fpb.Value{
+			Repeat:    4,
+			Timestamp: &fpb.Timestamp{Timestamp: 1235, DeltaMin: 1, DeltaMax: 1},
+			Value: &fpb.Value_UintValue{&fpb.UintValue{
+				Value:        10,
+				Distribution: &fpb.UintValue_List{List: &fpb.UintList{Options: []uint64{20, 30, 10}, Random: false}}}}},
+	}, {
 		desc: "Last repeat",
 		in: &fpb.Value{
 			Repeat:    1,
@@ -605,7 +765,7 @@ func TestNextValue(t *testing.T) {
 			if diff := errdiff.Substring(err, tc.err); diff != "" {
 				t.Errorf("newValue(%q).nextValue() %v", tc.in, diff)
 			}
-			if diff := pretty.Compare(v.v, tc.want); err == nil && diff != "" {
+			if diff := cmp.Diff(v.v, tc.want, cmp.Comparer(proto.Equal)); err == nil && diff != "" {
 				t.Errorf("value of newValue(%q).nextValue() %v", tc.in, diff)
 			}
 		})
@@ -831,10 +991,14 @@ func TestValueOf(t *testing.T) {
 		desc: "Bool value",
 		in:   &fpb.Value{Value: &fpb.Value_BoolValue{&fpb.BoolValue{Value: true}}},
 		want: true,
+	}, {
+		desc: "Uint value",
+		in:   &fpb.Value{Value: &fpb.Value_UintValue{&fpb.UintValue{Value: 100}}},
+		want: uint64(100),
 	}}
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
-			if got, want := ValueOf(tc.in), tc.want; !reflect.DeepEqual(got, want) {
+			if got, want := ValueOf(tc.in), tc.want; !cmp.Equal(got, want, cmp.Comparer(proto.Equal)) {
 				t.Errorf("ValueOf(%q) failed: got %q, want %q", tc.in, got, want)
 			}
 		})
@@ -1070,10 +1234,14 @@ func TestTypedValueOf(t *testing.T) {
 		desc: "bool value",
 		in:   &fpb.Value{Value: &fpb.Value_BoolValue{&fpb.BoolValue{Value: true}}},
 		want: &gpb.TypedValue{Value: &gpb.TypedValue_BoolVal{true}},
+	}, {
+		desc: "Uint value",
+		in:   &fpb.Value{Value: &fpb.Value_UintValue{&fpb.UintValue{Value: 100}}},
+		want: &gpb.TypedValue{Value: &gpb.TypedValue_UintVal{uint64(100)}},
 	}}
 	for _, tc := range tests {
 		t.Run(tc.desc, func(t *testing.T) {
-			if got, want := TypedValueOf(tc.in), tc.want; !reflect.DeepEqual(got, want) {
+			if got, want := TypedValueOf(tc.in), tc.want; !proto.Equal(got, want) {
 				t.Errorf("TypedValueOf(%q) failed: got %q, want %q", tc.in, got, want)
 			}
 		})

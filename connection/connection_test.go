@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"github.com/openconfig/gnmi/unimplemented"
 
 	pb "github.com/openconfig/gnmi/proto/gnmi"
 )
@@ -33,7 +32,7 @@ func newDevice(t *testing.T) (string, func()) {
 	t.Helper()
 
 	srv := grpc.NewServer()
-	s := &unimplemented.Server{}
+	s := &pb.UnimplementedGNMIServer{}
 	pb.RegisterGNMIServer(srv, s)
 	lis, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
@@ -54,17 +53,19 @@ func TestCtxCanceled(t *testing.T) {
 		t.Fatalf("Failed to initialize Manager: %v", err)
 	}
 	if _, _, err := m.Connection(ctx, addr); err == nil {
-		t.Errorf("Connection returned no error, want error")
+		t.Error("Connection returned no error, want error")
 	}
 }
 
 func assertConns(t *testing.T, m *Manager, want int) {
+	t.Helper()
 	if l := len(m.conns); l != want {
 		t.Fatalf("got %v connections, want %v", l, want)
 	}
 }
 
 func assertRefs(t *testing.T, m *Manager, addr string, want int) {
+	t.Helper()
 	c, ok := m.conns[addr]
 	if !ok {
 		t.Fatalf("connection %q missing", addr)
@@ -89,11 +90,11 @@ func TestConcurrentConnection(t *testing.T) {
 	for i := 0; i < lim; i++ {
 		go func() {
 			conn, _, err := m.Connection(ctx, addr)
-			if err != nil {
-				t.Fatalf("got error creating connection: %v, want no error", err)
-			}
-			if conn == nil {
-				t.Fatalf("got nil connection, expected not nil")
+			switch {
+			case err != nil:
+				t.Errorf("got error creating connection: %v, want no error", err)
+			case conn == nil:
+				t.Error("got nil connection, expected not nil")
 			}
 			wg.Done()
 		}()
@@ -175,10 +176,10 @@ func TestConnectionDone(t *testing.T) {
 				conn, done, err := m.Connection(ctx, c.connectionID)
 				wg.Done()
 				if conn == nil {
-					t.Fatalf("got nil connection")
+					t.Error("got nil connection")
 				}
 				if err != nil {
-					t.Fatalf("got error creating connection: %v, want no error", err)
+					t.Errorf("got error creating connection: %v, want no error", err)
 				}
 				if d < c.dones {
 					go func() {
@@ -232,32 +233,34 @@ func TestConcurrentDialErr(t *testing.T) {
 		t.Fatalf("Failed to initialize Manager: %v", err)
 	}
 	var wg sync.WaitGroup
-	lim := 2
-	wg.Add(lim)
-	errs := make(chan error, lim)
+	errs := make(chan error)
+	defer close(errs)
 	start := make(chan struct{})
 
+	lim := 2
+	wg.Add(lim)
 	for i := 0; i < lim; i++ {
 		go func() {
+			wg.Done()
 			<-start
 			_, _, err := m.Connection(ctx, "")
-			if err == nil {
-				t.Fatal("got no error, want error")
-			}
 			errs <- err
-			wg.Done()
 		}()
 	}
-	close(start)
-	wg.Wait()
 
-	close(errs)
+	// Wait for all goroutines to be ready.
+	wg.Wait()
+	close(start)
+
 	var prevErr error
-	for err := range errs {
+	for i := 0; i < lim; i++ {
+		err := <-errs
+		if err == nil {
+			t.Fatal("got no error, want error")
+		}
 		if prevErr == nil {
 			prevErr = err
-		}
-		if err != prevErr {
+		} else if err != prevErr {
 			t.Fatal("got different error instance, want same")
 		}
 	}

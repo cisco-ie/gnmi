@@ -120,7 +120,7 @@ func sendQueryAndDisplay(ctx context.Context, query client.Query, cfg *Config) e
 		return displayProtoResults(ctx, query, cfg, func(r proto.Message) []byte {
 			// r.String() will add extra whitespace at the end for some reason.
 			// Trim it down.
-			return bytes.TrimSpace([]byte(r.String()))
+			return bytes.TrimSpace([]byte(proto.CompactTextString(r)))
 		})
 	}
 	switch query.Type {
@@ -352,7 +352,7 @@ func displayWalk(target string, c *client.CacheClient, cfg *Config) {
 			b.add(path, v.Val)
 		}
 	}
-	c.WalkSorted(func(path []string, _ *ctree.Leaf, value interface{}) {
+	c.WalkSorted(func(path []string, _ *ctree.Leaf, value interface{}) error {
 		switch v := value.(type) {
 		default:
 			b.add(path, fmt.Sprintf("INVALID NODE %#v", value))
@@ -360,6 +360,7 @@ func displayWalk(target string, c *client.CacheClient, cfg *Config) {
 		case client.TreeVal:
 			addFunc(path, v)
 		}
+		return nil
 	})
 	result, err := json.MarshalIndent(b, cfg.DisplayPrefix, cfg.DisplayIndent)
 	if err != nil {

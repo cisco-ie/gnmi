@@ -24,18 +24,15 @@ import (
 	"time"
 
 	log "github.com/golang/glog"
-	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+	"github.com/golang/protobuf/proto"
 	"github.com/openconfig/gnmi/cache"
-	"github.com/openconfig/gnmi/client"
 	"github.com/openconfig/gnmi/coalesce"
 	"github.com/openconfig/gnmi/ctree"
 	"github.com/openconfig/gnmi/match"
 	"github.com/openconfig/gnmi/path"
-	"github.com/openconfig/gnmi/unimplemented"
-	"github.com/openconfig/gnmi/value"
 
 	pb "github.com/openconfig/gnmi/proto/gnmi"
 )
@@ -61,7 +58,7 @@ func (a *aclStub) Check(string) bool {
 	return true
 }
 
-// RPCACL is per RPC ACL interface
+// RPCACL is the per RPC ACL interface
 type RPCACL interface {
 	Check(string) bool
 }
@@ -74,7 +71,7 @@ type ACL interface {
 
 // Server is the implementation of the gNMI Subcribe API.
 type Server struct {
-	unimplemented.Server // Stub out all RPCs except Subscribe.
+	pb.UnimplementedGNMIServer // Stub out all RPCs except Subscribe.
 
 	c *cache.Cache // The cache queries are performed against.
 	m *match.Match // Structure to match updates against active subscriptions.
@@ -103,10 +100,6 @@ func (s *Server) SetACL(a ACL) {
 // Update passes a streaming update to registered clients.
 func (s *Server) Update(n *ctree.Leaf) {
 	switch v := n.Value().(type) {
-	case client.Delete:
-		s.m.Update(n, v.Path)
-	case client.Update:
-		s.m.Update(n, v.Path)
 	case *pb.Notification:
 		p := path.ToStrings(v.Prefix, true)
 		if len(v.Update) > 0 {
@@ -325,12 +318,13 @@ func (s *Server) processSubscription(c *streamClient) {
 				return
 			}
 			// Note that fullPath doesn't contain target name as the first element.
-			s.c.Query(c.target, fullPath, func(_ []string, l *ctree.Leaf, _ interface{}) {
+			s.c.Query(c.target, fullPath, func(_ []string, l *ctree.Leaf, _ interface{}) error {
 				// Stop processing query results on error.
 				if err != nil {
-					return
+					return err
 				}
 				_, err = c.queue.Insert(l)
+				return nil
 			})
 			if err != nil {
 				return
@@ -423,7 +417,7 @@ func (s *Server) sendStreamingResults(c *streamClient) {
 			return
 		}
 		// If the only target being subscribed was deleted, stop streaming.
-		if cache.IsTargetDelete(n) && c.target != "*" {
+		if isTargetDelete(n) && c.target != "*" {
 			log.Infof("Target %q was deleted. Closing stream.", c.target)
 			c.errC <- nil
 			return
@@ -431,47 +425,30 @@ func (s *Server) sendStreamingResults(c *streamClient) {
 	}
 }
 
-// MakeSubscribeResponse produces a gnmi_proto.SubscribeResponse from either
-// client.Notification or gnmi_proto.Notification
+// MakeSubscribeResponse produces a gnmi_proto.SubscribeResponse from a
+// gnmi_proto.Notification.
 //
 // This function modifies the message to set the duplicate count if it is
 // greater than 0. The function clones the gnmi notification if the duplicate count needs to be set.
 // You have to be working on a cloned message if you need to modify the message in any way.
 func MakeSubscribeResponse(n interface{}, dup uint32) (*pb.SubscribeResponse, error) {
 	var notification *pb.Notification
-	switch cache.Type {
-	case cache.GnmiNoti:
-		var ok bool
-		notification, ok = n.(*pb.Notification)
-		if !ok {
-			return nil, status.Errorf(codes.Internal, "invalid notification type: %#v", n)
-		}
+	var ok bool
+	notification, ok = n.(*pb.Notification)
+	if !ok {
+		return nil, status.Errorf(codes.Internal, "invalid notification type: %#v", n)
+	}
 
-		// There may be multiple updates in a notification. Since duplicate count is just
-		// an indicator that coalescion is happening, not a critical data, just the first
-		// update is set with duplicate count to be on the side of efficiency.
-		// Only attempt to set the duplicate count if it is greater than 0. The default
-		// value in the message is already 0.
-		if dup > 0 && len(notification.Update) > 0 {
-			// We need a copy of the cached notification before writing a client specific
-			// duplicate count as the notification is shared across all clients.
-			notification = proto.Clone(notification).(*pb.Notification)
-			notification.Update[0].Duplicates = dup
-		}
-	case cache.ClientLeaf:
-		notification = &pb.Notification{}
-		switch v := n.(type) {
-		case client.Delete:
-			notification.Delete = []*pb.Path{{Element: v.Path}}
-			notification.Timestamp = v.TS.UnixNano()
-		case client.Update:
-			typedVal, err := value.FromScalar(v.Val)
-			if err != nil {
-				return nil, err
-			}
-			notification.Update = []*pb.Update{{Path: &pb.Path{Element: v.Path}, Val: typedVal, Duplicates: dup}}
-			notification.Timestamp = v.TS.UnixNano()
-		}
+	// There may be multiple updates in a notification. Since duplicate count is just
+	// an indicator that coalescion is happening, not a critical data, just the first
+	// update is set with duplicate count to be on the side of efficiency.
+	// Only attempt to set the duplicate count if it is greater than 0. The default
+	// value in the message is already 0.
+	if dup > 0 && len(notification.Update) > 0 {
+		// We need a copy of the cached notification before writing a client specific
+		// duplicate count as the notification is shared across all clients.
+		notification = proto.Clone(notification).(*pb.Notification)
+		notification.Update[0].Duplicates = dup
 	}
 	response := &pb.SubscribeResponse{
 		Response: &pb.SubscribeResponse_Update{
@@ -480,4 +457,22 @@ func MakeSubscribeResponse(n interface{}, dup uint32) (*pb.SubscribeResponse, er
 	}
 
 	return response, nil
+}
+
+func isTargetDelete(l *ctree.Leaf) bool {
+	switch v := l.Value().(type) {
+	case *pb.Notification:
+		if len(v.Delete) == 1 {
+			var orig string
+			if v.Prefix != nil {
+				orig = v.Prefix.Origin
+			}
+			// Prefix path is indexed without target and origin
+			p := path.ToStrings(v.Prefix, false)
+			p = append(p, path.ToStrings(v.Delete[0], false)...)
+			// When origin isn't set, intention must be to delete entire target.
+			return orig == "" && len(p) == 1 && p[0] == "*"
+		}
+	}
+	return false
 }

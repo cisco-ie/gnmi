@@ -30,7 +30,6 @@ import (
 	log "github.com/golang/glog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
-	"github.com/openconfig/gnmi/unimplemented"
 
 	gnmipb "github.com/openconfig/gnmi/proto/gnmi"
 	fpb "github.com/openconfig/gnmi/testing/fake/proto"
@@ -40,16 +39,16 @@ import (
 // via Subscribe or Get will receive a stream of updates based on the requested
 // path and the provided initial configuration.
 type Agent struct {
-	unimplemented.Server
+	gnmipb.UnimplementedGNMIServer
 	mu     sync.Mutex
 	s      *grpc.Server
 	lis    net.Listener
 	target string
 	state  fpb.State
 	config *fpb.Config
-	// cMu protects clients.
-	cMu     sync.Mutex
-	clients map[string]*Client
+	// cMu protects client.
+	cMu    sync.Mutex
+	client *Client
 }
 
 // New returns an initialized fake agent.
@@ -66,11 +65,10 @@ func New(config *fpb.Config, opts []grpc.ServerOption) (*Agent, error) {
 // NewFromServer returns a new initialized fake agent from provided server.
 func NewFromServer(s *grpc.Server, config *fpb.Config) (*Agent, error) {
 	a := &Agent{
-		s:       s,
-		state:   fpb.State_INIT,
-		config:  config,
-		clients: map[string]*Client{},
-		target:  config.Target,
+		s:      s,
+		state:  fpb.State_INIT,
+		config: config,
+		target: config.Target,
 	}
 	var err error
 	if a.config.Port < 0 {
@@ -121,12 +119,10 @@ func (a *Agent) State() fpb.State {
 	return a.state
 }
 
-// Close shuts down the agent and closes all clients currently connected to the
-// agent.
+// Close shuts down the agent.
 func (a *Agent) Close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.Clear()
 	a.state = fpb.State_STOPPED
 	if a.s == nil {
 		return
@@ -137,37 +133,21 @@ func (a *Agent) Close() {
 	a.lis = nil
 }
 
-// Clear closes all currently connected clients of the agent.
-func (a *Agent) Clear() {
-	a.cMu.Lock()
-	defer a.cMu.Unlock()
-	var wg sync.WaitGroup
-	for k, v := range a.clients {
-		log.V(1).Infof("Closing client: %s", k)
-		wg.Add(1)
-		go func(name string, c *Client) {
-			c.Close()
-			log.V(1).Infof("Client %s closed", name)
-			wg.Done()
-		}(k, v)
-	}
-	wg.Wait()
-	a.clients = map[string]*Client{}
-}
-
 // Subscribe implements the gNMI Subscribe RPC.
 func (a *Agent) Subscribe(stream gnmipb.GNMI_SubscribeServer) error {
 	c := NewClient(a.config)
+	defer c.Close()
 
 	a.cMu.Lock()
-	a.clients[c.String()] = c
+	a.client = c
 	a.cMu.Unlock()
 
-	err := c.Run(stream)
+	return c.Run(stream)
+}
 
+// Requests returns the subscribe requests received by the most recently created client.
+func (a *Agent) Requests() []*gnmipb.SubscribeRequest {
 	a.cMu.Lock()
-	delete(a.clients, c.String())
-	a.cMu.Unlock()
-
-	return err
+	defer a.cMu.Unlock()
+	return a.client.requests
 }
